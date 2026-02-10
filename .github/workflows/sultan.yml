@@ -82,54 +82,31 @@ jobs:
         run: |
           cd "$CONFIG"
           export PATH=$GITHUB_WORKSPACE/gcc-14.2.0-nolibc/aarch64-linux/bin:$PATH
+          # Configure for the specific device
           make CROSS_COMPILE=aarch64-linux- CC=aarch64-linux-gcc -j$(nproc --all) ${{ inputs.codename }}_defconfig
+          # Compile the kernel
           make CROSS_COMPILE=aarch64-linux- CC=aarch64-linux-gcc -j$(nproc --all)
 
-      - name: Repack init_boot.img
+      - name: Prepare AnyKernel3 Flashable Zip
         run: |
-          # 1. Download the Linux x86_64 magiskboot binary
-          wget https://github.com/magojohnji/magiskboot-linux/raw/main/x86_64/magiskboot -O magiskboot
-          chmod +x magiskboot
-
-          # 2. Get Stock init_boot.img
-          echo "Downloading stock init_boot for ${{ inputs.codename }}..."
-          # Ensure this URL is correct and the file exists in your repository!
-          curl -Lo stock_init_boot.img "https://github.com/TheWildJames/Sultan_KernelSU_SUSFS/raw/main/stock/${{ inputs.codename }}/init_boot.img"
-
-          # 3. Unpack the stock image
-          ./magiskboot unpack stock_init_boot.img
-
-          # 4. Prepare your compiled kernel
-          # Sultan/GKI builds typically output to arch/arm64/boot/Image
-          if [ -f "$CONFIG/out/arch/arm64/boot/Image" ]; then
-            cp $CONFIG/out/arch/arm64/boot/Image ./kernel
-          else
-            # Fallback if the build produced a compressed Image
-            cp $CONFIG/out/arch/arm64/boot/Image.lz4 ./kernel
-          fi
-
-          # 5. Repack the image
-          # magiskboot looks for the 'kernel' file we just moved
-          ./magiskboot repack stock_init_boot.img sultan_init_boot_${{ inputs.codename }}.img
-
-      - name: Upload Repacked Image
-        uses: actions/upload-artifact@v4
-        with:
-          name: sultan_init_boot_${{ inputs.codename }}
-          path: sultan_init_boot_${{ inputs.codename }}.img
-
-      - name: Create Flashable Zip (AnyKernel3)
-        run: |
-          cp $CONFIG/out/arch/arm64/boot/Image.lz4 AnyKernel3/
+          # Copy the compiled kernel to the AnyKernel directory
+          # Sultan/GKI uses Image.lz4 for Pixel devices
+          cp $CONFIG/out/arch/arm64/boot/Image.lz4 AnyKernel3/Image.lz4
+          
+          # Gather DTB files for Tensor G4 (zumapro)
           if [ "${{ inputs.codename }}" == "zumapro" ]; then
+             echo "Concatenating DTBs for zumapro..."
              cat $CONFIG/out/google-devices/zumapro/dts/*.dtb > AnyKernel3/dtb
           fi
-          cd AnyKernel3 && zip -r "../AnyKernel3-SukiSU-${{ inputs.codename }}.zip" ./*
 
-      - name: Upload Both Formats
+          # Create the final zip
+          cd AnyKernel3
+          ZIP_NAME="Sultan-SukiSU-${{ inputs.codename }}.zip"
+          zip -r "../$ZIP_NAME" ./*
+          echo "ZIP_PATH=$ZIP_NAME" >> $GITHUB_ENV
+
+      - name: Upload Kernel Zip
         uses: actions/upload-artifact@v4
         with:
           name: Sultan-SukiSU-${{ inputs.codename }}
-          path: |
-            sultan_init_boot_${{ inputs.codename }}.img
-            AnyKernel3-SukiSU-${{ inputs.codename }}.zip
+          path: ${{ env.ZIP_PATH }}
