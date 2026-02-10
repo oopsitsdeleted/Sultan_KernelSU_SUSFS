@@ -51,8 +51,14 @@ jobs:
       - name: Integrate SukiSU Ultra
         run: |
           cd "$CONFIG"
-          # Per your guide: Using susfs-main for SukiSU with SUSFS integration
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
+          # The branch name in the SukiSU repo is 'susfs'
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs
+          
+          # Safety check: Verify the directory exists
+          if [ ! -d "KernelSU" ]; then
+            echo "ERROR: KernelSU directory not found! Integration failed."
+            exit 1
+          fi
 
       - name: Configure Kernel Defconfig
         run: |
