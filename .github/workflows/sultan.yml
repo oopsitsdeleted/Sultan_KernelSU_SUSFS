@@ -87,20 +87,36 @@ jobs:
 
       - name: Repack init_boot.img
         run: |
-          # 1. Download magiskboot tool
-          wget https://github.com/TheWildJames/AnyKernel3/raw/master/tools/magiskboot -O magiskboot
+          # 1. Download the Linux x86_64 magiskboot binary
+          wget https://github.com/magojohnji/magiskboot-linux/raw/main/x86_64/magiskboot -O magiskboot
           chmod +x magiskboot
 
-          # 2. Get Stock init_boot.img (Replace URL with your specific build's stock img if possible)
-          # For this example, we assume you have a 'stock' folder in your repo or download it here
+          # 2. Get Stock init_boot.img
           echo "Downloading stock init_boot for ${{ inputs.codename }}..."
-          # Note: In a real scenario, you'd download the specific factory img for your current firmware
+          # Ensure this URL is correct and the file exists in your repository!
           curl -Lo stock_init_boot.img "https://github.com/TheWildJames/Sultan_KernelSU_SUSFS/raw/main/stock/${{ inputs.codename }}/init_boot.img"
 
-          # 3. Repack the image with the new Sultan Kernel
-          # Sultan/GKI builds output to arch/arm64/boot/Image
-          cp $CONFIG/out/arch/arm64/boot/Image ./kernel
+          # 3. Unpack the stock image
+          ./magiskboot unpack stock_init_boot.img
+
+          # 4. Prepare your compiled kernel
+          # Sultan/GKI builds typically output to arch/arm64/boot/Image
+          if [ -f "$CONFIG/out/arch/arm64/boot/Image" ]; then
+            cp $CONFIG/out/arch/arm64/boot/Image ./kernel
+          else
+            # Fallback if the build produced a compressed Image
+            cp $CONFIG/out/arch/arm64/boot/Image.lz4 ./kernel
+          fi
+
+          # 5. Repack the image
+          # magiskboot looks for the 'kernel' file we just moved
           ./magiskboot repack stock_init_boot.img sultan_init_boot_${{ inputs.codename }}.img
+
+      - name: Upload Repacked Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: sultan_init_boot_${{ inputs.codename }}
+          path: sultan_init_boot_${{ inputs.codename }}.img
 
       - name: Create Flashable Zip (AnyKernel3)
         run: |
