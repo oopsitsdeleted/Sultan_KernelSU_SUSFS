@@ -1,44 +1,256 @@
-- name: Integrate SukiSU Ultra
-  run: |
-    cd "$CONFIG"
-    
-    # Download setup script
-    echo "Downloading SukiSU setup script..."
-    curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" -o /tmp/sukisu_setup.sh
-    
-    # Run setup WITHOUT 'susfs' argument (that branch doesn't exist)
-    # This will use the default 'main' branch
-    echo "Running SukiSU integration..."
-    bash /tmp/sukisu_setup.sh
-    
-    # Verify integration succeeded
-    if [ ! -d "KernelSU" ]; then
-      echo "ERROR: KernelSU directory not found! Integration failed."
-      exit 1
-    fi
-    
-    # Check for the actual kernel integration (the symlink target)
-    if [ ! -d "drivers/kernelsu" ]; then
-      echo "ERROR: drivers/kernelsu not found! Integration failed."
-      exit 1
-    fi
-    
-    # Verify Makefile was modified
-    if ! grep -q "kernelsu" drivers/Makefile; then
-      echo "ERROR: drivers/Makefile not modified for KernelSU!"
-      exit 1
-    fi
-    
-    # Verify Kconfig was modified
-    if ! grep -q "kernelsu/Kconfig" drivers/Kconfig; then
-      echo "ERROR: drivers/Kconfig not modified for KernelSU!"
-      exit 1
-    fi
-    
-    echo "✓ SukiSU integration successful"
-    echo "KernelSU directory contents:"
-    ls -la KernelSU/ || echo "KernelSU dir exists but can't list"
-    echo "drivers/kernelsu contents:"
-    ls -la drivers/kernelsu/
-    echo "Checking Kconfig files:"
-    find KernelSU -name "Kconfig" -type f
+name: Sultan-KSUNext-SUSFS
+permissions:
+  contents: write
+  actions: write
+
+on:
+  workflow_call:
+    inputs:
+      codename:
+        required: true
+        type: string
+      repo:
+        required: true
+        type: string
+      android_version:
+        required: true
+        type: string
+      kernel_version:
+        required: true
+        type: string
+
+jobs:
+  build-kernel-sultan-ksunext-susfs:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ["KSUNext-SUSFS"]
+    steps:
+      - name: Download and extract GCC 14.2.0 toolchain
+        run: |
+          wget https://www.kernel.org/pub/tools/crosstool/files/bin/x86_64/14.2.0/x86_64-gcc-14.2.0-nolibc-aarch64-linux.tar.gz
+          gunzip x86_64-gcc-14.2.0-nolibc-aarch64-linux.tar.gz
+          tar -xf x86_64-gcc-14.2.0-nolibc-aarch64-linux.tar
+
+      - name: Set Environment Variables
+        run: |
+          echo "CONFIG=android_kernel_google_tensynos" >> $GITHUB_ENV
+          echo "BUILD_DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
+
+      - name: Clone Source and Dependencies
+        run: |
+          git clone https://github.com/kerneltoast/android_kernel_google_tensynos
+          git clone https://github.com/TheWildJames/AnyKernel3.git -b "sultan-${{ inputs.codename }}"
+          
+          SUSFS_BRANCH="gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}"
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH"
+          git clone https://github.com/TheWildJames/kernel_patches.git
+
+      - name: Integrate KernelSU Next
+        run: |
+          cd "$CONFIG"
+          
+          echo "Cloning KernelSU Next repository..."
+          # Clone KernelSU Next (the fork by rifsxd)
+          git clone https://github.com/rifsxd/KernelSU-Next.git -b main KernelSU
+          
+          echo "Integrating KernelSU Next into kernel..."
+          
+          # Create symlink to drivers
+          ln -sf "$(pwd)/KernelSU/kernel" "$(pwd)/drivers/kernelsu"
+          
+          # Modify drivers/Makefile
+          if ! grep -q "kernelsu" drivers/Makefile; then
+            echo "obj-\$(CONFIG_KSU) += kernelsu/" >> drivers/Makefile
+            echo "✓ Modified drivers/Makefile"
+          else
+            echo "✓ drivers/Makefile already contains kernelsu"
+          fi
+          
+          # Modify drivers/Kconfig
+          if ! grep -q "kernelsu/Kconfig" drivers/Kconfig; then
+            sed -i '/endmenu # "Device Drivers"/i\source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+            echo "✓ Modified drivers/Kconfig"
+          else
+            echo "✓ drivers/Kconfig already contains kernelsu"
+          fi
+          
+          # Verify integration
+          if [ ! -d "drivers/kernelsu" ]; then
+            echo "ERROR: drivers/kernelsu not created!"
+            exit 1
+          fi
+          
+          if [ ! -L "drivers/kernelsu" ]; then
+            echo "ERROR: drivers/kernelsu is not a symlink!"
+            exit 1
+          fi
+          
+          echo "✓ KernelSU Next integrated successfully"
+          echo "KernelSU Next version: $(cd KernelSU && git describe --tags 2>/dev/null || git rev-parse --short HEAD)"
+          echo "drivers/kernelsu contents:"
+          ls -la drivers/kernelsu/ | head -10
+
+      - name: Apply SUSFS Patches
+        run: |
+          cd "$CONFIG"
+          
+          echo "Copying SUSFS patches..."
+          cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch ./
+          
+          # Copy SUSFS source files
+          if [ -d "../susfs4ksu/kernel_patches/fs" ]; then
+            cp -r ../susfs4ksu/kernel_patches/fs/* ./fs/
+            echo "✓ Copied SUSFS fs patches"
+          fi
+          
+          if [ -d "../susfs4ksu/kernel_patches/include/linux" ]; then
+            cp -r ../susfs4ksu/kernel_patches/include/linux/* ./include/linux/
+            echo "✓ Copied SUSFS include patches"
+          fi
+          
+          # Apply SUSFS patch
+          echo "Applying SUSFS kernel patch..."
+          if patch -p1 < 50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch; then
+            echo "✓ SUSFS patches applied successfully"
+          else
+            echo "ERROR: SUSFS patch failed to apply!"
+            echo "Patch may be incompatible with KernelSU Next or kernel version"
+            exit 1
+          fi
+          
+          # Apply Sultan fix
+          echo "Applying Sultan sys.c fix..."
+          cp ../kernel_patches/sultan/sys.c_fix.patch ./
+          if patch -p1 < sys.c_fix.patch; then
+            echo "✓ Sultan sys.c fix applied"
+          else
+            echo "WARNING: sys.c fix had issues, but continuing..."
+          fi
+
+      - name: Configure Kernel Defconfig
+        run: |
+          cd "$CONFIG"
+          DEFCONFIG="./arch/arm64/configs/${{ inputs.codename }}_defconfig"
+          
+          echo "Configuring kernel defconfig..."
+          
+          # CRITICAL: KernelSU requires KPROBES to function on GKI kernels
+          echo "CONFIG_KPROBES=y" >> $DEFCONFIG
+          echo "CONFIG_HAVE_KPROBES=y" >> $DEFCONFIG
+          echo "CONFIG_KPROBE_EVENTS=y" >> $DEFCONFIG
+          
+          # Enable KernelSU and SUSFS
+          echo "CONFIG_KSU=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS=y" >> $DEFCONFIG
+          
+          # Networking & Sultan Tweaks
+          echo "CONFIG_IP_NF_TARGET_TTL=y" >> $DEFCONFIG
+          echo "CONFIG_IP6_NF_TARGET_HL=y" >> $DEFCONFIG
+          
+          # Custom Kernel Name with Date
+          sed -i "s/CONFIG_LOCALVERSION=\"-Sultan\"/CONFIG_LOCALVERSION=\"-lawn-gaolak-kernel-${{ env.BUILD_DATE }}\"/" $DEFCONFIG
+          
+          # VERIFY CONFIG
+          echo "=== Verifying defconfig ==="
+          if grep -q "CONFIG_KSU=y" $DEFCONFIG; then
+            echo "✓ CONFIG_KSU=y found in defconfig"
+          else
+            echo "ERROR: CONFIG_KSU not in defconfig!"
+            exit 1
+          fi
+          
+          if grep -q "CONFIG_KPROBES=y" $DEFCONFIG; then
+            echo "✓ CONFIG_KPROBES=y found in defconfig"
+          else
+            echo "ERROR: CONFIG_KPROBES not in defconfig!"
+            exit 1
+          fi
+          
+          echo "✓ Defconfig configured successfully"
+
+      - name: Build the Kernel
+        run: |
+          cd "$CONFIG"
+          export PATH=$GITHUB_WORKSPACE/gcc-14.2.0-nolibc/aarch64-linux/bin:$PATH
+          
+          echo "Building kernel..."
+          
+          # Build with output directory
+          make O=out CROSS_COMPILE=aarch64-linux- CC=aarch64-linux-gcc -j$(nproc --all) ${{ inputs.codename }}_defconfig
+          make O=out CROSS_COMPILE=aarch64-linux- CC=aarch64-linux-gcc -j$(nproc --all)
+          
+          # Verify build succeeded
+          if [ ! -f "out/arch/arm64/boot/Image.lz4" ]; then
+            echo "ERROR: Kernel build failed - Image.lz4 not found!"
+            exit 1
+          fi
+          
+          echo "✓ Kernel built successfully"
+
+      - name: Verify KSU and SUSFS in Built Kernel
+        run: |
+          cd "$CONFIG"
+          
+          echo "=== Verifying KSU and SUSFS in built kernel ==="
+          
+          # Check if CONFIG_KSU is in the built config
+          if zcat out/.config 2>/dev/null | grep -q "CONFIG_KSU=y"; then
+            echo "✓ CONFIG_KSU=y confirmed in built kernel config"
+          else
+            echo "ERROR: CONFIG_KSU not found in built kernel!"
+            echo "Built config KSU settings:"
+            zcat out/.config 2>/dev/null | grep KSU || echo "No KSU config found"
+            exit 1
+          fi
+          
+          # Check if CONFIG_KSU_SUSFS is in the built config
+          if zcat out/.config 2>/dev/null | grep -q "CONFIG_KSU_SUSFS=y"; then
+            echo "✓ CONFIG_KSU_SUSFS=y confirmed in built kernel config"
+          else
+            echo "WARNING: CONFIG_KSU_SUSFS not found in built kernel!"
+            echo "SUSFS may not be enabled"
+          fi
+          
+          # Check KPROBES
+          if zcat out/.config 2>/dev/null | grep -q "CONFIG_KPROBES=y"; then
+            echo "✓ CONFIG_KPROBES=y confirmed"
+          else
+            echo "ERROR: CONFIG_KPROBES not enabled!"
+          fi
+          
+          echo "✓ Verification complete"
+
+      - name: Prepare AnyKernel3 Artifact
+        run: |
+          echo "Preparing AnyKernel3 package..."
+          
+          # Copy kernel image
+          cp $CONFIG/out/arch/arm64/boot/Image.lz4 AnyKernel3/Image.lz4
+          
+          # Copy device tree if building for zumapro
+          if [ "${{ inputs.codename }}" == "zumapro" ]; then
+            if [ -d "$CONFIG/out/google-devices/zumapro/dts" ]; then
+              cat $CONFIG/out/google-devices/zumapro/dts/*.dtb > AnyKernel3/dtb
+              echo "✓ DTB created"
+            else
+              echo "WARNING: DTB directory not found at $CONFIG/out/google-devices/zumapro/dts"
+              echo "Looking for alternative DTB locations..."
+              find $CONFIG/out -name "*.dtb" -type f 2>/dev/null | head -10
+            fi
+          fi
+          
+          # Create zip from AnyKernel3 directory contents
+          cd AnyKernel3
+          zip -r "../Sultan-KSUNext-${{ inputs.codename }}-${{ env.BUILD_DATE }}.zip" ./*
+          cd ..
+          
+          echo "FINAL_ZIP=Sultan-KSUNext-${{ inputs.codename }}-${{ env.BUILD_DATE }}.zip" >> $GITHUB_ENV
+          echo "✓ AnyKernel3 package created"
+
+      - name: Upload Kernel Zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sultan-KSUNext-${{ inputs.codename }}-${{ env.BUILD_DATE }}
+          path: ${{ env.FINAL_ZIP }}
