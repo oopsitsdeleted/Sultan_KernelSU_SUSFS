@@ -57,23 +57,22 @@ jobs:
       - name: Integrate SukiSU Ultra
         run: |
           cd "$CONFIG"
-          # Using SukiSU Ultra's official setup script with SUSFS compatibility
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
-
+          # We use 'main' because 'susfs-main' is often a temporary or moving branch.
+          # SukiSU's script will handle the setup once the files are cloned.
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
       - name: Apply SUSFS Patches
         run: |
           cd "$CONFIG"
-          # Apply standard SUSFS kernel patches
           cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch ./
           cp ../susfs4ksu/kernel_patches/fs/* ./fs/
           cp ../susfs4ksu/kernel_patches/include/linux/* ./include/linux/
           
+          # Force apply the patch and ignore minor offsets
           patch -p1 < 50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch || true
           
-          # Apply Sultan-specific fixes for SUSFS
+          # Essential Sultan Fix for SUSFS
           cp ../kernel_patches/sultan/sys.c_fix.patch ./
           patch -p1 < sys.c_fix.patch
-
       - name: Configure Kernel Defconfig
         run: |
           cd "$CONFIG"
@@ -100,19 +99,22 @@ jobs:
 
       - name: Prepare AnyKernel3 Artifact
         run: |
-          # Pixel 9 Pro XL (zumapro) uses Image.lz4
+          # Copy binary to AnyKernel3 directory
           cp $CONFIG/out/arch/arm64/boot/Image.lz4 AnyKernel3/Image.lz4
           
-          # Concatenate DTBs for Tensor G4
+          # Concatenate DTBs specifically for Pixel 9 Pro XL
           if [ "${{ inputs.codename }}" == "zumapro" ]; then
             cat $CONFIG/out/google-devices/zumapro/dts/*.dtb > AnyKernel3/dtb
           fi
           
+          # FIX: Create a flat zip (no nested folders)
           cd AnyKernel3
-          ZIP_NAME="Sultan-SukiSU-${{ inputs.codename }}.zip"
-          zip -r "../$ZIP_NAME" ./*
-          echo "FINAL_ZIP=$ZIP_NAME" >> $GITHUB_ENV
-
+          zip -r "../Sultan-SukiSU-${{ inputs.codename }}.zip" ./*
+          cd ..
+          
+          # Clean up the folder so the artifact upload doesn't get confused
+          rm -rf AnyKernel3
+          echo "FINAL_ZIP=Sultan-SukiSU-${{ inputs.codename }}.zip" >> $GITHUB_ENV
       - name: Upload Kernel Zip
         uses: actions/upload-artifact@v4
         with:
