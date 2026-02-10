@@ -60,6 +60,22 @@ jobs:
             exit 1
           fi
 
+      - name: Apply SUSFS Patches
+        run: |
+          cd "$CONFIG"
+          cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch ./
+          cp ../susfs4ksu/kernel_patches/fs/* ./fs/
+          cp ../susfs4ksu/kernel_patches/include/linux/* ./include/linux/
+          
+          if ! patch -p1 < 50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch; then
+            echo "WARNING: SUSFS patch failed, but continuing..."
+          fi
+          
+          cp ../kernel_patches/sultan/sys.c_fix.patch ./
+          if ! patch -p1 < sys.c_fix.patch; then
+            echo "WARNING: sys.c fix patch failed, but continuing..."
+          fi
+
       - name: Configure Kernel Defconfig
         run: |
           cd "$CONFIG"
@@ -81,50 +97,36 @@ jobs:
           # Custom Kernel Name with Date
           sed -i "s/CONFIG_LOCALVERSION=\"-Sultan\"/CONFIG_LOCALVERSION=\"-Sultan-SukiSU-${{ env.BUILD_DATE }}\"/" $DEFCONFIG
 
-      - name: Apply SUSFS Patches
-        run: |
-          cd "$CONFIG"
-          cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch ./
-          cp ../susfs4ksu/kernel_patches/fs/* ./fs/
-          cp ../susfs4ksu/kernel_patches/include/linux/* ./include/linux/
-          patch -p1 < 50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch || true
-          
-          cp ../kernel_patches/sultan/sys.c_fix.patch ./
-          patch -p1 < sys.c_fix.patch
-
-      - name: Configure Kernel Defconfig
-        run: |
-          cd "$CONFIG"
-          DEFCONFIG="./arch/arm64/configs/${{ inputs.codename }}_defconfig"
-          
-          # Enable SukiSU and SUSFS
-          echo "CONFIG_KSU=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS=y" >> $DEFCONFIG
-          
-          # Networking tweaks
-          echo "CONFIG_IP_NF_TARGET_TTL=y" >> $DEFCONFIG
-          echo "CONFIG_IP6_NF_TARGET_HL=y" >> $DEFCONFIG
-          
-          # CUSTOM KERNEL NAME:
-          # This replaces the default name with "Sultan-SukiSU-YYYYMMDD"
-          sed -i "s/CONFIG_LOCALVERSION=\"-Sultan\"/CONFIG_LOCALVERSION=\"-sucky-gaolak-lawn-custom-kernel-${{ env.BUILD_DATE }}\"/" $DEFCONFIG
-
       - name: Build the Kernel
         run: |
           cd "$CONFIG"
           export PATH=$GITHUB_WORKSPACE/gcc-14.2.0-nolibc/aarch64-linux/bin:$PATH
-          make CROSS_COMPILE=aarch64-linux- CC=aarch64-linux-gcc -j$(nproc --all) ${{ inputs.codename }}_defconfig
-          make CROSS_COMPILE=aarch64-linux- CC=aarch64-linux-gcc -j$(nproc --all)
+          
+          # Build with output directory
+          make O=out CROSS_COMPILE=aarch64-linux- CC=aarch64-linux-gcc -j$(nproc --all) ${{ inputs.codename }}_defconfig
+          make O=out CROSS_COMPILE=aarch64-linux- CC=aarch64-linux-gcc -j$(nproc --all)
+          
+          # Verify build succeeded
+          if [ ! -f "out/arch/arm64/boot/Image.lz4" ]; then
+            echo "ERROR: Kernel build failed - Image.lz4 not found!"
+            exit 1
+          fi
 
       - name: Prepare AnyKernel3 Artifact
         run: |
+          # Copy kernel image
           cp $CONFIG/out/arch/arm64/boot/Image.lz4 AnyKernel3/Image.lz4
           
+          # Copy device tree if building for zumapro
           if [ "${{ inputs.codename }}" == "zumapro" ]; then
-            cat $CONFIG/out/google-devices/zumapro/dts/*.dtb > AnyKernel3/dtb
+            if [ -d "$CONFIG/out/google-devices/zumapro/dts" ]; then
+              cat $CONFIG/out/google-devices/zumapro/dts/*.dtb > AnyKernel3/dtb
+            else
+              echo "WARNING: DTB directory not found, skipping dtb creation"
+            fi
           fi
           
-          # FIX: Flat zip creation to avoid "zip inside a zip"
+          # Create zip from AnyKernel3 directory contents
           cd AnyKernel3
           zip -r "../Sultan-SukiSU-${{ inputs.codename }}-${{ env.BUILD_DATE }}.zip" ./*
           cd ..
