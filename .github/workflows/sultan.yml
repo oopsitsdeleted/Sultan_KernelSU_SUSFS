@@ -25,7 +25,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Building for SukiSU with SUSFS support
         variant: ["SukiSU-SUSFS"]
     steps:
       - name: Download and extract GCC 14.2.0 toolchain
@@ -34,45 +33,38 @@ jobs:
           gunzip x86_64-gcc-14.2.0-nolibc-aarch64-linux.tar.gz
           tar -xf x86_64-gcc-14.2.0-nolibc-aarch64-linux.tar
 
-      - name: Set CONFIG Environment Variable
+      - name: Set Environment Variables
         run: |
-          CONFIG="android_kernel_google_tensynos"
-          echo "CONFIG=$CONFIG" >> $GITHUB_ENV
+          echo "CONFIG=android_kernel_google_tensynos" >> $GITHUB_ENV
+          # This creates a date tag like 20260210
+          echo "BUILD_DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
 
       - name: Clone Source and Dependencies
         run: |
-          # Clone Sultan Kernel Source
           git clone https://github.com/kerneltoast/android_kernel_google_tensynos
-          
-          # Clone AnyKernel3 (Branch specifically for the device)
           git clone https://github.com/TheWildJames/AnyKernel3.git -b "sultan-${{ inputs.codename }}"
           
-          # Clone SUSFS Source for patching
           SUSFS_BRANCH="gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}"
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH"
-          
-          # Clone additional helper patches
           git clone https://github.com/TheWildJames/kernel_patches.git
 
       - name: Integrate SukiSU Ultra
         run: |
           cd "$CONFIG"
-          # We use 'main' because 'susfs-main' is often a temporary or moving branch.
-          # SukiSU's script will handle the setup once the files are cloned.
+          # Fixed: Using 'main' branch to ensure hooks are injected properly
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
+
       - name: Apply SUSFS Patches
         run: |
           cd "$CONFIG"
           cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch ./
           cp ../susfs4ksu/kernel_patches/fs/* ./fs/
           cp ../susfs4ksu/kernel_patches/include/linux/* ./include/linux/
-          
-          # Force apply the patch and ignore minor offsets
           patch -p1 < 50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch || true
           
-          # Essential Sultan Fix for SUSFS
           cp ../kernel_patches/sultan/sys.c_fix.patch ./
           patch -p1 < sys.c_fix.patch
+
       - name: Configure Kernel Defconfig
         run: |
           cd "$CONFIG"
@@ -82,41 +74,38 @@ jobs:
           echo "CONFIG_KSU=y" >> $DEFCONFIG
           echo "CONFIG_KSU_SUSFS=y" >> $DEFCONFIG
           
-          # Enable WireGuard & Networking tweaks
+          # Networking tweaks
           echo "CONFIG_IP_NF_TARGET_TTL=y" >> $DEFCONFIG
           echo "CONFIG_IP6_NF_TARGET_HL=y" >> $DEFCONFIG
           
-          # Set Local Version string
-          sed -i 's/CONFIG_LOCALVERSION="-Sultan"/CONFIG_LOCALVERSION="-Sultan-SukiSU"/' $DEFCONFIG
+          # CUSTOM KERNEL NAME:
+          # This replaces the default name with "Sultan-SukiSU-YYYYMMDD"
+          sed -i "s/CONFIG_LOCALVERSION=\"-Sultan\"/CONFIG_LOCALVERSION=\"-sucky-gaolak-lawn-custom-kernel-${{ env.BUILD_DATE }}\"/" $DEFCONFIG
 
       - name: Build the Kernel
         run: |
           cd "$CONFIG"
           export PATH=$GITHUB_WORKSPACE/gcc-14.2.0-nolibc/aarch64-linux/bin:$PATH
-          
           make CROSS_COMPILE=aarch64-linux- CC=aarch64-linux-gcc -j$(nproc --all) ${{ inputs.codename }}_defconfig
           make CROSS_COMPILE=aarch64-linux- CC=aarch64-linux-gcc -j$(nproc --all)
 
       - name: Prepare AnyKernel3 Artifact
         run: |
-          # Copy binary to AnyKernel3 directory
           cp $CONFIG/out/arch/arm64/boot/Image.lz4 AnyKernel3/Image.lz4
           
-          # Concatenate DTBs specifically for Pixel 9 Pro XL
           if [ "${{ inputs.codename }}" == "zumapro" ]; then
             cat $CONFIG/out/google-devices/zumapro/dts/*.dtb > AnyKernel3/dtb
           fi
           
-          # FIX: Create a flat zip (no nested folders)
+          # FIX: Flat zip creation to avoid "zip inside a zip"
           cd AnyKernel3
-          zip -r "../Sultan-SukiSU-${{ inputs.codename }}.zip" ./*
+          zip -r "../Sultan-SukiSU-${{ inputs.codename }}-${{ env.BUILD_DATE }}.zip" ./*
           cd ..
           
-          # Clean up the folder so the artifact upload doesn't get confused
-          rm -rf AnyKernel3
-          echo "FINAL_ZIP=Sultan-SukiSU-${{ inputs.codename }}.zip" >> $GITHUB_ENV
+          echo "FINAL_ZIP=Sultan-SukiSU-${{ inputs.codename }}-${{ env.BUILD_DATE }}.zip" >> $GITHUB_ENV
+
       - name: Upload Kernel Zip
         uses: actions/upload-artifact@v4
         with:
-          name: Sultan-SukiSU-${{ inputs.codename }}
+          name: Sultan-SukiSU-${{ inputs.codename }}-${{ env.BUILD_DATE }}
           path: ${{ env.FINAL_ZIP }}
