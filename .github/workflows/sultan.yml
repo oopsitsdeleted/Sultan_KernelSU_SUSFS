@@ -36,7 +36,6 @@ jobs:
       - name: Set Environment Variables
         run: |
           echo "CONFIG=android_kernel_google_tensynos" >> $GITHUB_ENV
-          # This creates a date tag like 20260210
           echo "BUILD_DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
 
       - name: Clone Source and Dependencies
@@ -51,35 +50,64 @@ jobs:
       - name: Integrate SukiSU Ultra
         run: |
           cd "$CONFIG"
-          # The branch name in the SukiSU repo is 'susfs'
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs
           
-          # Safety check: Verify the directory exists
+          # Download setup script
+          echo "Downloading SukiSU setup script..."
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" -o /tmp/sukisu_setup.sh
+          
+          # Run setup WITHOUT 'susfs' argument (that branch doesn't exist)
+          # This will use the default 'main' branch
+          echo "Running SukiSU integration..."
+          bash /tmp/sukisu_setup.sh
+          
+          # Verify integration succeeded
           if [ ! -d "KernelSU" ]; then
             echo "ERROR: KernelSU directory not found! Integration failed."
             exit 1
           fi
+          
+          if [ ! -f "KernelSU/Kconfig" ]; then
+            echo "ERROR: KernelSU files incomplete!"
+            exit 1
+          fi
+          
+          echo "✓ SukiSU integration successful"
+          echo "KernelSU directory contents:"
+          ls -la KernelSU/
 
       - name: Apply SUSFS Patches
         run: |
           cd "$CONFIG"
-          cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch ./
-          cp ../susfs4ksu/kernel_patches/fs/* ./fs/
-          cp ../susfs4ksu/kernel_patches/include/linux/* ./include/linux/
           
-          if ! patch -p1 < 50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch; then
-            echo "WARNING: SUSFS patch failed, but continuing..."
+          # Copy SUSFS patches
+          echo "Copying SUSFS patches..."
+          cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch ./
+          cp -r ../susfs4ksu/kernel_patches/fs/* ./fs/
+          cp -r ../susfs4ksu/kernel_patches/include/linux/* ./include/linux/
+          
+          # Apply SUSFS patch
+          echo "Applying SUSFS patches..."
+          if patch -p1 < 50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch; then
+            echo "✓ SUSFS patches applied successfully"
+          else
+            echo "WARNING: SUSFS patch had some issues, but continuing..."
           fi
           
+          # Apply Sultan fix
+          echo "Applying Sultan sys.c fix..."
           cp ../kernel_patches/sultan/sys.c_fix.patch ./
-          if ! patch -p1 < sys.c_fix.patch; then
-            echo "WARNING: sys.c fix patch failed, but continuing..."
+          if patch -p1 < sys.c_fix.patch; then
+            echo "✓ Sultan sys.c fix applied"
+          else
+            echo "WARNING: sys.c fix had issues, but continuing..."
           fi
 
       - name: Configure Kernel Defconfig
         run: |
           cd "$CONFIG"
           DEFCONFIG="./arch/arm64/configs/${{ inputs.codename }}_defconfig"
+          
+          echo "Configuring kernel defconfig..."
           
           # CRITICAL: SukiSU requires KPROBES to function on GKI kernels
           echo "CONFIG_KPROBES=y" >> $DEFCONFIG
@@ -96,11 +124,31 @@ jobs:
           
           # Custom Kernel Name with Date
           sed -i "s/CONFIG_LOCALVERSION=\"-Sultan\"/CONFIG_LOCALVERSION=\"-Sultan-SukiSU-${{ env.BUILD_DATE }}\"/" $DEFCONFIG
+          
+          # VERIFY CONFIG
+          echo "=== Verifying defconfig ==="
+          if grep -q "CONFIG_KSU=y" $DEFCONFIG; then
+            echo "✓ CONFIG_KSU=y found in defconfig"
+          else
+            echo "ERROR: CONFIG_KSU not in defconfig!"
+            exit 1
+          fi
+          
+          if grep -q "CONFIG_KPROBES=y" $DEFCONFIG; then
+            echo "✓ CONFIG_KPROBES=y found in defconfig"
+          else
+            echo "ERROR: CONFIG_KPROBES not in defconfig!"
+            exit 1
+          fi
+          
+          echo "✓ Defconfig configured successfully"
 
       - name: Build the Kernel
         run: |
           cd "$CONFIG"
           export PATH=$GITHUB_WORKSPACE/gcc-14.2.0-nolibc/aarch64-linux/bin:$PATH
+          
+          echo "Building kernel..."
           
           # Build with output directory
           make O=out CROSS_COMPILE=aarch64-linux- CC=aarch64-linux-gcc -j$(nproc --all) ${{ inputs.codename }}_defconfig
@@ -111,9 +159,29 @@ jobs:
             echo "ERROR: Kernel build failed - Image.lz4 not found!"
             exit 1
           fi
+          
+          echo "✓ Kernel built successfully"
+
+      - name: Verify KSU in Built Kernel
+        run: |
+          cd "$CONFIG"
+          
+          echo "=== Verifying KSU in built kernel ==="
+          
+          # Check if CONFIG_KSU is in the built config
+          if zcat out/.config 2>/dev/null | grep -q "CONFIG_KSU=y"; then
+            echo "✓ CONFIG_KSU=y confirmed in built kernel config"
+          else
+            echo "ERROR: CONFIG_KSU not found in built kernel!"
+            echo "Built config KSU settings:"
+            zcat out/.config 2>/dev/null | grep KSU || echo "No KSU config found"
+            exit 1
+          fi
 
       - name: Prepare AnyKernel3 Artifact
         run: |
+          echo "Preparing AnyKernel3 package..."
+          
           # Copy kernel image
           cp $CONFIG/out/arch/arm64/boot/Image.lz4 AnyKernel3/Image.lz4
           
@@ -121,8 +189,11 @@ jobs:
           if [ "${{ inputs.codename }}" == "zumapro" ]; then
             if [ -d "$CONFIG/out/google-devices/zumapro/dts" ]; then
               cat $CONFIG/out/google-devices/zumapro/dts/*.dtb > AnyKernel3/dtb
+              echo "✓ DTB created"
             else
-              echo "WARNING: DTB directory not found, skipping dtb creation"
+              echo "WARNING: DTB directory not found at $CONFIG/out/google-devices/zumapro/dts"
+              echo "Looking for alternative DTB locations..."
+              find $CONFIG/out -name "*.dtb" -type f
             fi
           fi
           
@@ -132,6 +203,7 @@ jobs:
           cd ..
           
           echo "FINAL_ZIP=Sultan-SukiSU-${{ inputs.codename }}-${{ env.BUILD_DATE }}.zip" >> $GITHUB_ENV
+          echo "✓ AnyKernel3 package created"
 
       - name: Upload Kernel Zip
         uses: actions/upload-artifact@v4
