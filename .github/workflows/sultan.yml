@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: ["WKSU-SUSFS", "SHEDOWE"]
+        variant: ["SUKISU-SUSFS", "SHEDOWE"]
     steps:
       #- name: Maximize Build Space
       #  uses: AdityaGarg8/remove-unwanted-software@v5
